@@ -52,6 +52,7 @@ export default function Home() {
 
       // Step 2: load FFmpeg (runs entirely in the browser, free)
       setStatus('Loading video engine...');
+      if (!ffmpegRef.current) ffmpegRef.current = new FFmpeg();
       const ffmpeg = ffmpegRef.current;
       if (!ffmpeg.loaded) {
         const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
