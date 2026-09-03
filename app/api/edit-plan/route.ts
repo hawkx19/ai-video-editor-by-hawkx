@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: `Gemini API error (${response.status})`,
-          details: responseText.slice(0, 500),
+          details: responseText,
         },
         { status: 502 }
       );
