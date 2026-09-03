@@ -1,63 +1,105 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-
-function ensureDeviceId() {
-  if (typeof document === 'undefined') return;
-  const has = document.cookie.split('; ').find((c) => c.startsWith('device_id='));
-  if (!has) {
-    const id = crypto.randomUUID();
-    document.cookie = `device_id=${id}; path=/; max-age=31536000`;
-  }
-}
+import { useState, useRef } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
 const STYLE_PRESETS = ['Documentary', 'Meme / Funny', 'Cinematic', 'Vlog'];
+const DAILY_LIMIT_KEY = 'lastEditDate';
+
+function canEditToday(): boolean {
+  const last = localStorage.getItem(DAILY_LIMIT_KEY);
+  const today = new Date().toDateString();
+  return last !== today;
+}
+
+function markEditedToday() {
+  localStorage.setItem(DAILY_LIMIT_KEY, new Date().toDateString());
+}
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [prompt, setPrompt] = useState('');
-  const [status, setStatus] = useState<'idle' | 'planning' | 'processing' | 'done' | 'error'>('idle');
+  const [status, setStatus] = useState('');
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
-
-  useEffect(() => {
-    ensureDeviceId();
-  }, []);
+  const [busy, setBusy] = useState(false);
+  const ffmpegRef = useRef(new FFmpeg());
 
   async function handleSubmit() {
     if (!file || !prompt.trim()) {
       setErrorMsg('Please upload a video and describe the edit style.');
       return;
     }
+    if (!canEditToday()) {
+      setErrorMsg('Daily free limit reached (1 video/day). Try again tomorrow!');
+      return;
+    }
+
     setErrorMsg('');
     setDownloadUrl(null);
+    setBusy(true);
 
     try {
-      const duration = await getVideoDuration(file);
-
-      setStatus('planning');
+      // Step 1: get AI edit plan
+      setStatus('Understanding your prompt...');
       const planRes = await fetch('/api/edit-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, videoDurationSeconds: duration }),
+        body: JSON.stringify({ prompt, videoDurationSeconds: 180 }),
       });
-      if (!planRes.ok) throw new Error((await planRes.json()).error || 'Planning failed');
       const { plan } = await planRes.json();
 
-      setStatus('processing');
-      const formData = new FormData();
-      formData.append('video', file);
-      formData.append('plan', JSON.stringify(plan));
+      // Step 2: load FFmpeg (runs entirely in the browser, free)
+      setStatus('Loading video engine...');
+      const ffmpeg = ffmpegRef.current;
+      if (!ffmpeg.loaded) {
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+      }
 
-      const processRes = await fetch('/api/process-video', { method: 'POST', body: formData });
-      const result = await processRes.json();
-      if (!processRes.ok) throw new Error(result.error || 'Processing failed');
+      // Step 3: write input file
+      setStatus('Editing your video...');
+      await ffmpeg.writeFile('input.mp4', await fetchFile(file));
 
-      setDownloadUrl(result.downloadUrl);
-      setStatus('done');
+      // Build filter based on AI plan
+      const filters: string[] = [];
+      if (plan.colorGrade === 'warm') filters.push('eq=gamma_r=1.1:gamma_b=0.9:saturation=1.15');
+      if (plan.colorGrade === 'cool') filters.push('eq=gamma_b=1.1:gamma_r=0.9:saturation=1.1');
+      if (plan.colorGrade === 'desaturated') filters.push('eq=saturation=0.4:contrast=1.1');
+      if (plan.colorGrade === 'high_contrast_bw') filters.push('hue=s=0,eq=contrast=1.4');
+      filters.push('scale=-2:720');
+      const filterStr = filters.join(',');
+
+      const duration = Math.min(180, plan.trim.endSeconds - plan.trim.startSeconds || 180);
+
+      await ffmpeg.exec([
+        '-i', 'input.mp4',
+        '-ss', String(plan.trim.startSeconds || 0),
+        '-t', String(duration),
+        '-vf', filterStr,
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '28',
+        '-c:a', 'aac',
+        'output.mp4',
+      ]);
+
+      const data = await ffmpeg.readFile('output.mp4');
+      const blob = new Blob([data as Uint8Array], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+
+      markEditedToday();
+      setDownloadUrl(url);
+      setStatus('Done!');
     } catch (err: any) {
-      setErrorMsg(err.message || 'Something went wrong');
-      setStatus('error');
+      console.error(err);
+      setErrorMsg('Something went wrong: ' + (err.message || 'processing failed'));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -99,12 +141,10 @@ export default function Home() {
 
         <button
           onClick={handleSubmit}
-          disabled={status === 'planning' || status === 'processing'}
+          disabled={busy}
           className="w-full py-3 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 font-medium"
         >
-          {status === 'planning' && 'Understanding your prompt...'}
-          {status === 'processing' && 'Editing your video...'}
-          {(status === 'idle' || status === 'done' || status === 'error') && 'Edit My Video'}
+          {busy ? status || 'Working...' : 'Edit My Video'}
         </button>
 
         {errorMsg && <p className="text-red-400 text-sm">{errorMsg}</p>}
@@ -112,7 +152,7 @@ export default function Home() {
         {downloadUrl && (
           <div className="pt-4 border-t border-gray-800">
             <video src={downloadUrl} controls className="w-full rounded mb-2" />
-            <a href={downloadUrl} download className="text-indigo-400 underline text-sm">
+            <a href={downloadUrl} download="edited-video.mp4" className="text-indigo-400 underline text-sm">
               Download edited video
             </a>
           </div>
@@ -120,13 +160,4 @@ export default function Home() {
       </div>
     </main>
   );
-}
-
-function getVideoDuration(file: File): Promise<number> {
-  return new Promise((resolve) => {
-    const video = document.createElement('video');
-    video.preload = 'metadata';
-    video.onloadedmetadata = () => resolve(video.duration || 180);
-    video.src = URL.createObjectURL(file);
-  });
-            }
+  }
