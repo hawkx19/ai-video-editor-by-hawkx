@@ -89,7 +89,7 @@ export default function Home() {
       ]);
 
       const data = await ffmpeg.readFile('output.mp4');
-      const blob = new Blob([data as Uint8Array], { type: 'video/mp4' });
+      const blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
 
       markEditedToday();
