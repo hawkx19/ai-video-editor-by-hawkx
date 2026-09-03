@@ -36,8 +36,8 @@ export async function POST(req: NextRequest) {
     }
 
     const jobId = uuid();
-    const uploadsDir = path.join(process.cwd(), 'uploads');
-    const outputsDir = path.join(process.cwd(), 'outputs');
+    const uploadsDir = path.join('/tmp', 'uploads');
+const outputsDir = path.join('/tmp', 'outputs');
     fs.mkdirSync(uploadsDir, { recursive: true });
     fs.mkdirSync(outputsDir, { recursive: true });
 
