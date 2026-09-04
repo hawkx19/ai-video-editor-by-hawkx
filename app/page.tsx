@@ -48,6 +48,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, videoDurationSeconds: 180 }),
       });
+      if (!planRes.ok) throw new Error('AI plan failed: ' + JSON.stringify(await planRes.json()));
       const { plan } = await planRes.json();
 
       // Step 2: load FFmpeg (runs entirely in the browser, free)
